@@ -1,5 +1,6 @@
 package com.example.foregroundservice;
 
+import androidx.annotation.NonNull;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
@@ -23,9 +24,15 @@ import java.util.concurrent.atomic.AtomicBoolean;
 public class MainActivity extends AppCompatActivity {
     public static final String TAG = MainActivity.class.getSimpleName();
 
-    private final AtomicBoolean running = new AtomicBoolean(true);
+    private final AtomicBoolean running = new AtomicBoolean(false);
 
     Button btnStartService, btnStopService, btnTerminateService;
+
+    int PERMISSION_ALL = 1;
+    String[] PERMISSIONS = {
+        Manifest.permission.ACCESS_FINE_LOCATION,
+        Manifest.permission.ACCESS_COARSE_LOCATION
+    };
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -43,6 +50,18 @@ public class MainActivity extends AppCompatActivity {
         Intent serviceIntent = new Intent(this, ForegroundService.class);
         serviceIntent.putExtra("inputExtra", "Foregroud Service Example in Android");
         ContextCompat.startForegroundService(this, serviceIntent);
+
+        if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+            Log.d(TAG, "Do not have the permission of ACCESS_FINE_LOCATION");
+            // TODO: Consider calling
+            //    ActivityCompat#requestPermissions
+            // here to request the missing permissions, and then overriding
+            //   public void onRequestPermissionsResult(int requestCode, String[] permissions,
+            //                                          int[] grantResults)
+            // to handle the case where the user grants the permission. See the documentation
+            // for ActivityCompat#requestPermissions for more details.
+            ActivityCompat.requestPermissions(this, PERMISSIONS, PERMISSION_ALL);
+        }
     }
 
     @Override
@@ -78,5 +97,28 @@ public class MainActivity extends AppCompatActivity {
 
     public boolean isServiceRunning() {
         return running.get();
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions, @NonNull int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+
+        if (Build.VERSION.SDK_INT >= 23) {
+
+            // requestPermission의 배열의 index가 아래 grantResults index와 매칭
+            // 퍼미션이 승인되면
+            if(grantResults.length > 0  && grantResults[0]== PackageManager.PERMISSION_GRANTED){
+                Log.d(TAG,"Permission: "+permissions[0]+ "was "+grantResults[0]);
+
+                // TODO : 퍼미션이 승인되는 경우에 대한 코드
+
+            }
+            // 퍼미션이 승인 거부되면
+            else {
+                Log.d(TAG,"Permission denied");
+
+                // TODO : 퍼미션이 거부되는 경우에 대한 코드
+            }
+        }
     }
 }

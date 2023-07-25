@@ -53,6 +53,7 @@ public class ControlSubThread implements Runnable {
                 Message msg = Message.obtain(mHandler, ForegroundService.MESSAGE_COUNT_NOTIFICATION);
                 msg.arg1 = mCount;
                 mHandler.sendMessage(msg);
+
                 Log.d(TAG, "Count: " + mCount);
             } catch (InterruptedException e){
                 Thread.currentThread().interrupt();
@@ -62,6 +63,7 @@ public class ControlSubThread implements Runnable {
             // do something
         }
         mCount = 0;
+        running.set(false);
         stopped.set(true);
         Log.d(TAG, "Worker is done: " + worker.getId());
     }

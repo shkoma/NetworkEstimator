@@ -1,5 +1,6 @@
 package com.example.foregroundservice;
 
+import android.Manifest;
 import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
@@ -9,15 +10,25 @@ import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.content.pm.PackageManager;
+import android.os.Build;
 import android.os.Handler;
 import android.os.HandlerThread;
 import android.os.IBinder;
 import android.os.Message;
+import android.telephony.CellIdentityLte;
+import android.telephony.CellInfo;
+import android.telephony.CellInfoLte;
+import android.telephony.CellSignalStrengthLte;
+import android.telephony.TelephonyManager;
 import android.util.Log;
 import android.widget.Toast;
 
 import androidx.annotation.Nullable;
+import androidx.core.app.ActivityCompat;
 import androidx.core.app.NotificationCompat;
+
+import java.util.List;
 
 // https://github.com/kazimdsaidul/Foreground-Service-Android-Example/blob/master/app/src/main/java/com/kazi/foregroundserviceandroidexample/ForegroundService.java
 
@@ -29,7 +40,10 @@ public class ForegroundService extends Service {
     public static final String ACTION_SERVICE_TRI_TO_STOP = "android.intent.action.SERVICE_TRI_TO_STOP";
     public static final String ACTION_TERMINATE_SERVICE = "android.intent.action.TERMINATE_SERVICE";
 
+    public static final int MESSAGE_BEGIN = 0;
     public static final int MESSAGE_COUNT_NOTIFICATION = 0;
+    public static final int MESSAGE_GET_CELLINFO = 1;
+    public static final int MESSAGE_END = 1;
 
     private static final int DELAYED_TIME = 1000;
     private static final int NOTIFICATION_ID = 10;
@@ -41,8 +55,8 @@ public class ForegroundService extends Service {
             Log.d(TAG, "Receive: " + intent.getAction());
             if (ACTION_SERVICE_TRI_TO_START.equals(intent.getAction())) {
                 startThread();
-            }
-            else if (ACTION_SERVICE_TRI_TO_STOP.equals(intent.getAction())) {
+                mHandler.sendEmptyMessageDelayed(MESSAGE_GET_CELLINFO, DELAYED_TIME * 2);
+            } else if (ACTION_SERVICE_TRI_TO_STOP.equals(intent.getAction())) {
                 stopThread();
             } else if (ACTION_TERMINATE_SERVICE.equals(intent.getAction())) {
                 stopThread();
@@ -70,6 +84,10 @@ public class ForegroundService extends Service {
                         NotificationCompat.Builder notificationBuilder = getNotificationBuilder(msg.arg1);
                         startForeground(NOTIFICATION_ID, notificationBuilder.build());
                         break;
+                    case MESSAGE_GET_CELLINFO:
+                        getCellInformation();
+                        sendEmptyMessageDelayed(MESSAGE_GET_CELLINFO, DELAYED_TIME * 2);
+                        break;
                 }
             }
         };
@@ -84,9 +102,7 @@ public class ForegroundService extends Service {
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
         Log.i(TAG, "onStartCommand");
-
-        startThread();
-
+//        startThread();
         createNotificationChannel();
         NotificationCompat.Builder notificationBuilder = getNotificationBuilder(0);
         startForeground(NOTIFICATION_ID, notificationBuilder.build());
@@ -109,11 +125,12 @@ public class ForegroundService extends Service {
 
     private void prepareToDestroy() {
         unregisterReceiver(mReceiver);
-        mHandler.removeMessages(MESSAGE_COUNT_NOTIFICATION);
+        removeAllMessage();
         mHandler.getLooper().quit();
         mHandlerThread.interrupt();
         mHandlerThread.quitSafely();
     }
+
     @Override
     public boolean onUnbind(Intent intent) {
         prepareToDestroy();
@@ -150,11 +167,18 @@ public class ForegroundService extends Service {
         }
     }
 
+    private void removeAllMessage() {
+        for (int i = MESSAGE_BEGIN; i <= MESSAGE_END; i++) {
+            mHandler.removeMessages(i);
+        }
+    }
+
     private void stopThread() {
         if (mThread != null && mThread.isRunning()) {
             mThread.interrupt();
         }
         mThread = null;
+        removeAllMessage();
     }
 
     private void startThread() {
@@ -164,6 +188,40 @@ public class ForegroundService extends Service {
 
         if (mThread.isStopped()) {
             mThread.start();
+        }
+    }
+
+    private void getCellInformation() {
+        Log.d(TAG, "getCellInformation");
+        TelephonyManager tm = (TelephonyManager) getSystemService(Context.TELEPHONY_SERVICE);
+        if (tm != null) {
+            if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+                return;
+            }
+
+            List<CellInfo> cells = tm.getAllCellInfo();
+            if (cells != null) {
+                for (CellInfo info : cells) {
+                    if (info.isRegistered() == false) continue;
+
+                    Log.d(TAG, "current call is: " + info.toString());
+                    if (info instanceof CellInfoLte) {
+                        CellIdentityLte lte = ((CellInfoLte) info).getCellIdentity();
+                        CellSignalStrengthLte signal = ((CellInfoLte) info).getCellSignalStrength();
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                                Log.d(TAG, "TimeStamp: " + info.getTimestampMillis());
+                            }
+                            Log.d(TAG, "LTE CellID: " + lte.getCi() + ", Bandwidth: " + lte.getBandwidth()
+                                             + ", TAC: " + lte.getTac() + ", PLMN: " + lte.getMccString() + lte.getMncString());
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                                Log.d(TAG, "CQI: " + signal.getCqi() + ", RSSI: " + signal.getRssi() + ", RSRP: " + signal.getRsrp()
+                                                 + ", RSRQ: " + signal.getRsrq() + ", RSSNR: " + signal.getRssnr());
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 }
