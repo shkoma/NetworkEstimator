@@ -11,8 +11,6 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.pm.PackageManager;
-import android.location.Location;
-import android.net.wifi.ScanResult;
 import android.net.wifi.WifiInfo;
 import android.net.wifi.WifiManager;
 import android.os.Build;
@@ -45,7 +43,6 @@ import java.util.Enumeration;
 import java.util.List;
 import java.util.concurrent.Executor;
 import java.util.concurrent.Executors;
-import java.util.concurrent.atomic.AtomicReference;
 
 // https://github.com/kazimdsaidul/Foreground-Service-Android-Example/blob/master/app/src/main/java/com/kazi/foregroundserviceandroidexample/ForegroundService.java
 
@@ -283,7 +280,7 @@ public class ForegroundService extends Service {
     }
 
     private void getCurrentLocation() {
-        Log.d(TAG, "getCurrentLocation");
+//        Log.d(TAG, "getCurrentLocation");
         if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED
                 && ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
         }
@@ -301,26 +298,15 @@ public class ForegroundService extends Service {
     }
 
     private void getCurrentWifiInfo() {
-        Log.d(TAG, "getCurrentWifiInfo");
+//        Log.d(TAG, "getCurrentWifiInfo");
         if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
                 != PackageManager.PERMISSION_GRANTED) {
             return;
         }
         WifiInfo wifiInfo = mWifiManager.getConnectionInfo();
-//        int ipAddress = wifiInfo.getNetworkId();
-//        String macAddress = wifiInfo.getMacAddress();
-//        Log.d(TAG, "Wifi ip address: " + android.text.format.Formatter.formatIpAddress(ipAddress));
-//        Log.d(TAG, "Wifi mac address: " + macAddress);
+        String bssid = wifiInfo.getBSSID();
+        Log.d(TAG, "Wifi bssid: " + bssid);
         getLocalIpAddress();
-        ScanResult scanResult;
-        List<ScanResult> apList = mWifiManager.getScanResults();
-        for (int i = 0; i < apList.size() && i < 5; i++) {
-            scanResult = (ScanResult) apList.get(i);
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-//                Log.d(TAG, "Wifi ap[" + i + "]: " + scanResult.getWifiSsid());
-//                Log.d(TAG, "Wifi ap[" + i + "]: " + scanResult.getWifiStandard());
-            }
-        }
     }
 
     public String getLocalIpAddress() {
