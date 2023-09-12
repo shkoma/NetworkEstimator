@@ -14,20 +14,31 @@ import android.content.pm.PackageManager;
 import android.net.wifi.WifiInfo;
 import android.net.wifi.WifiManager;
 import android.os.Build;
+import android.os.Environment;
 import android.os.Handler;
 import android.os.HandlerThread;
 import android.os.IBinder;
 import android.os.Message;
+import android.telephony.CellIdentity;
 import android.telephony.CellIdentityLte;
+import android.telephony.CellIdentityNr;
 import android.telephony.CellInfo;
 import android.telephony.CellInfoLte;
+import android.telephony.CellInfoNr;
 import android.telephony.CellSignalStrengthLte;
+import android.telephony.CellSignalStrengthNr;
+import android.telephony.NetworkRegistrationInfo;
+import android.telephony.ServiceState;
+import android.telephony.SignalStrength;
+import android.telephony.SubscriptionManager;
 import android.telephony.TelephonyManager;
 import android.text.format.Formatter;
 import android.util.Log;
 import android.widget.Toast;
 
+import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
+import androidx.annotation.RequiresApi;
 import androidx.core.app.ActivityCompat;
 import androidx.core.app.NotificationCompat;
 
@@ -35,10 +46,23 @@ import com.google.android.gms.location.FusedLocationProviderClient;
 import com.google.android.gms.location.LocationRequest;
 import com.google.android.gms.location.LocationServices;
 import com.google.android.gms.tasks.CancellationTokenSource;
+import com.google.firebase.crashlytics.buildtools.reloc.com.google.common.collect.Table;
 
+import java.io.BufferedReader;
+import java.io.BufferedWriter;
+import java.io.File;
+import java.io.FileNotFoundException;
+import java.io.FileReader;
+import java.io.FileWriter;
+import java.io.IOException;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
 import java.net.InetAddress;
 import java.net.NetworkInterface;
 import java.net.SocketException;
+import java.text.SimpleDateFormat;
+import java.util.ArrayList;
+import java.util.Date;
 import java.util.Enumeration;
 import java.util.List;
 import java.util.concurrent.Executor;
@@ -62,9 +86,11 @@ public class ForegroundService extends Service {
     private static final int DELAYED_TIME = 1000;
     private static final int NOTIFICATION_ID = 10;
 
+    private TelephonyManager mTelephonyManager;
     private NotificationManager mNotificationManager;
     private WifiManager mWifiManager;
     private BroadcastReceiver mReceiver = new BroadcastReceiver() {
+        @RequiresApi(api = Build.VERSION_CODES.S)
         @Override
         public void onReceive(Context context, Intent intent) {
             Log.d(TAG, "Receive: " + intent.getAction());
@@ -74,6 +100,7 @@ public class ForegroundService extends Service {
                 mHandler.sendEmptyMessageDelayed(MESSAGE_GET_INFO, DELAYED_TIME * 2);
             } else if (ACTION_SERVICE_TRI_TO_STOP.equals(intent.getAction())) {
                 stopThread();
+                readDataFromFile();
             } else if (ACTION_TERMINATE_SERVICE.equals(intent.getAction())) {
                 stopThread();
                 stopForeground(true);
@@ -88,15 +115,149 @@ public class ForegroundService extends Service {
     ControlSubThread mThread;
 
     private FusedLocationProviderClient fusedLocationProviderClient;
+    private SubscriptionManager mSubsctiptionManager;
 
+    class TimeseriesData {
+        public static final String CID = "cid";
+        public static final String BANDWIDTH = "bandwidth";
+        public static final String TAC = "tac";
+        public static final String MCC = "mcc";
+        public static final String MNC = "mnc";
+
+        public static final String CQI = "cqi";
+        public static final String RSSI = "rssi";
+        public static final String RSRP = "rsrp";
+        public static final String RSRQ = "rsrq";
+        public static final String RSSNR = "rssnr";
+
+        public static final String LONGIUDE = "longitude";
+        public static final String LATITUDE = "latitude";
+        public static final String BSSID = "bssid";
+
+        public long timestamp;
+        public int cid;
+        public int bandwidth;
+        //     private final int mEarfcn;
+        //    // cell bandwidth, in kHz
+        public int tac;
+        public String mcc;
+        public String mnc;
+
+        public int cqi;
+        public int rssi;
+        public int rsrp;
+        public int rsrq;
+        public int rssnr;
+
+        public double longitude;
+        public double latitude;
+
+        public String bssid;
+        public String localIp;
+
+        private String getCurrentTime() {
+            long now = System.currentTimeMillis();
+            Date date = new Date(now);
+            SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss");
+            String nowTime = sdf.format(date);
+            return nowTime;
+        }
+
+        @Override
+        public String toString() {
+            String str = getCurrentTime() + "," + cid + "," + bandwidth + "," + tac + "," + mcc + "," + mnc + "," +
+                    cqi + "," + rssi + "," + rsrp + "," + rsrq + "," + rssnr  + "," +
+                    longitude + "," + latitude + "," + bssid + "," + localIp;
+            return str;
+        }
+    }
+
+    List<SignalStrengthListener> mSignalStrengthListener = new ArrayList<>();
+    List<CellInfoListener> mCellInfoListener = new ArrayList<>();
+
+    private boolean mListen;
+    class SignalStrengthCallback implements SignalStrengthListener.Callback {
+        int mPhoneId;
+        SignalStrengthCallback(int phoneId) {
+            mPhoneId = phoneId;
+        }
+        @Override
+        public void onSignalStrengthChanged(SignalStrength signalStrength) {
+            Log.d(TAG, "received Callback[" + mPhoneId + "]: " + signalStrength.toString());
+        }
+    }
+
+    class CellInfoCallback implements CellInfoListener.Callback {
+        int mPhoneId;
+        CellInfoCallback(int phoneId) {
+            mPhoneId = phoneId;
+        }
+        @RequiresApi(api = Build.VERSION_CODES.Q)
+        @Override
+        public void onCellInfoChanged(@NonNull List<CellInfo> cellInfo) {
+            Log.d(TAG, "received Callback[" + mPhoneId + "]: " + cellInfo.toString());
+
+            TimeseriesData data = new TimeseriesData();
+            for (CellInfo info : cellInfo) {
+                if (info.isRegistered()) {
+                    if (info instanceof CellInfoNr) {
+                        CellIdentityNr nr = (CellIdentityNr) ((CellInfoNr) info).getCellIdentity();
+                        CellSignalStrengthNr signal = (CellSignalStrengthNr) ((CellInfoNr) info).getCellSignalStrength();
+                        signal.getAsuLevel();
+                    } else if (info instanceof CellInfoLte) {
+                        CellIdentityLte lte = ((CellInfoLte) info).getCellIdentity();
+                        CellSignalStrengthLte signal = ((CellInfoLte) info).getCellSignalStrength();
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                                data.timestamp = info.getTimestampMillis();
+                            }
+                            data.cid = lte.getCi();
+                            data.bandwidth = lte.getBandwidth();
+                            data.tac = lte.getTac();
+                            data.mcc = lte.getMccString();
+                            data.mnc = lte.getMncString();
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                                data.cqi = signal.getCqi();
+                                data.rssi = signal.getRssi();
+                                data.rsrp = signal.getRsrp();
+                                data.rsrq = signal.getRsrq();
+                                data.rssnr = signal.getRssnr();
+                            }
+                        }
+                    }
+                }
+            }
+            getCurrentLocation(data);
+            getCurrentWifiInfo(data);
+        }
+    }
+
+    @RequiresApi(api = Build.VERSION_CODES.S)
     @Override
     public void onCreate() {
         super.onCreate();
+        mTelephonyManager = getSystemService(TelephonyManager.class);
         mNotificationManager = getSystemService(NotificationManager.class);
+        mSubsctiptionManager = getSystemService(SubscriptionManager.class);
         mWifiManager = (WifiManager) getSystemService(Context.WIFI_SERVICE);
         mHandlerThread = new HandlerThread("ForegroundService Handler");
         mHandlerThread.start();
+        for (int idx = 0; idx < mTelephonyManager.getActiveModemCount(); idx++) {
+            mCellInfoListener.add(new CellInfoListener(this, idx, new CellInfoCallback(idx)));
+//            mSignalStrengthListener.add(new SignalStrengthListener(this, idx, new SignalStrengthCallback(idx)));
+        }
+
+        mListen = true;
+
+        for (CellInfoListener listener : mCellInfoListener) {
+            listener.updateSubscriptionIds();
+        }
+//        for (SignalStrengthListener listener : mSignalStrengthListener) {
+//            listener.updateSubscriptionIds();
+//        }
+
         mHandler = new Handler(mHandlerThread.getLooper()) {
+            @RequiresApi(api = Build.VERSION_CODES.S)
             @Override
             public void handleMessage(Message msg) {
                 switch (msg.what) {
@@ -105,9 +266,24 @@ public class ForegroundService extends Service {
                         startForeground(NOTIFICATION_ID, notificationBuilder.build());
                         break;
                     case MESSAGE_GET_INFO:
-                        getCellInformation();
-                        getCurrentLocation();
-                        getCurrentWifiInfo();
+                        if (mListen) {
+                            for (CellInfoListener listener : mCellInfoListener) {
+                                listener.pause();
+                            }
+//                            for (SignalStrengthListener listener : mSignalStrengthListener) {
+//                                listener.pause();
+//                            }
+                            mListen = false;
+                        } else {
+                            for (CellInfoListener listener : mCellInfoListener) {
+                                listener.resume();
+                            }
+//                            for (SignalStrengthListener listener : mSignalStrengthListener) {
+//                                listener.resume();
+//                            }
+                            mListen = true;
+                        }
+
                         sendEmptyMessageDelayed(MESSAGE_GET_INFO, DELAYED_TIME * 2);
                         break;
                 }
@@ -155,6 +331,7 @@ public class ForegroundService extends Service {
         mHandlerThread.quitSafely();
     }
 
+    @RequiresApi(api = Build.VERSION_CODES.S)
     @Override
     public boolean onUnbind(Intent intent) {
         prepareToDestroy();
@@ -197,7 +374,16 @@ public class ForegroundService extends Service {
         }
     }
 
+    @RequiresApi(api = Build.VERSION_CODES.S)
     private void stopThread() {
+        for (CellInfoListener listener : mCellInfoListener) {
+            listener.pause();
+        }
+
+        for (SignalStrengthListener listener : mSignalStrengthListener) {
+            listener.pause();
+        }
+
         if (mThread != null && mThread.isRunning()) {
             mThread.interrupt();
         }
@@ -228,37 +414,35 @@ public class ForegroundService extends Service {
             Toast.makeText(this, "Please turn on the wifi", Toast.LENGTH_SHORT).show();
         }
     }
-    private void getCellInformation() {
-        Log.d(TAG, "getCellInformation");
-        TelephonyManager tm = (TelephonyManager) getSystemService(Context.TELEPHONY_SERVICE);
-        if (tm != null) {
-            if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
-                return;
-            }
 
-            List<CellInfo> cells = tm.getAllCellInfo();
-            if (cells != null) {
-                for (CellInfo info : cells) {
-                    if (info.isRegistered() == false) continue;
+    private void reflectMethod() {
+        try {
+            TelephonyManager telephony = (TelephonyManager) getSystemService(Context.TELEPHONY_SERVICE);
+            Class<?> tmClass = Class.forName(telephony.getClass().getName());
 
-                    Log.d(TAG, "current call is: " + info.toString());
-                    if (info instanceof CellInfoLte) {
-                        CellIdentityLte lte = ((CellInfoLte) info).getCellIdentity();
-                        CellSignalStrengthLte signal = ((CellInfoLte) info).getCellSignalStrength();
-                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                                Log.d(TAG, "TimeStamp: " + info.getTimestampMillis());
-                            }
-                            Log.d(TAG, "LTE CellID: " + lte.getCi() + ", Bandwidth: " + lte.getBandwidth()
-                                    + ", TAC: " + lte.getTac() + ", PLMN: " + lte.getMccString() + lte.getMncString());
-                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                                Log.d(TAG, "CQI: " + signal.getCqi() + ", RSSI: " + signal.getRssi() + ", RSRP: " + signal.getRsrp()
-                                        + ", RSRQ: " + signal.getRsrq() + ", RSSNR: " + signal.getRssnr());
-                            }
-                        }
-                    }
-                }
+            Class<?>[] parameter = new Class[1];
+            parameter[0] = int.class;
+            Method getAllCellInfoBySubId = tmClass.getMethod("getAllCellInfoBySubId", parameter);
+
+            Object[] obParameter = new Object[1];
+            obParameter[0] = 0;
+            Object ob_phone = getAllCellInfoBySubId.invoke(telephony, obParameter);
+
+            if (ob_phone != null) {
+                Log.d(TAG, ob_phone.toString());
             }
+//            Method[] declaredMethod = tmClass.getDeclaredMethods();
+//            for (Method m : declaredMethod) {
+//                Log.d(TAG, m.getName());
+//            }
+        } catch (ClassNotFoundException e) {
+            Log.e(TAG, "No TelephoneManager");
+        } catch (NoSuchMethodException e) {
+            Log.e(TAG, "NoSuchMethodException, " + e);
+        } catch (InvocationTargetException e) {
+            Log.e(TAG, "InvocationTargetException, " + e);
+        } catch (IllegalAccessException e) {
+            Log.e(TAG, "IllegalAccessException, " + e);
         }
     }
 
@@ -279,8 +463,8 @@ public class ForegroundService extends Service {
         }
     }
 
-    private void getCurrentLocation() {
-//        Log.d(TAG, "getCurrentLocation");
+    private void getCurrentLocation(TimeseriesData data) {
+        Log.d(TAG, "getCurrentLocation");
         if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED
                 && ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
         }
@@ -292,13 +476,17 @@ public class ForegroundService extends Service {
                     .addOnSuccessListener(executor, location -> {
                         if (location != null) {
                             Log.d(TAG, "long: " + location.getLongitude() + ", lati: " + location.getLatitude());
+                            data.longitude = location.getLongitude();
+                            data.latitude = location.getLatitude();
+                            Log.d(TAG, data.toString());
+                            wrtieDataToFile(data);
                         }
                     });
         }
     }
 
-    private void getCurrentWifiInfo() {
-//        Log.d(TAG, "getCurrentWifiInfo");
+    private void getCurrentWifiInfo(TimeseriesData data) {
+        Log.d(TAG, "getCurrentWifiInfo");
         if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
                 != PackageManager.PERMISSION_GRANTED) {
             return;
@@ -306,7 +494,8 @@ public class ForegroundService extends Service {
         WifiInfo wifiInfo = mWifiManager.getConnectionInfo();
         String bssid = wifiInfo.getBSSID();
         Log.d(TAG, "Wifi bssid: " + bssid);
-        getLocalIpAddress();
+        data.bssid = bssid;
+        data.localIp = getLocalIpAddress();
     }
 
     public String getLocalIpAddress() {
@@ -326,5 +515,57 @@ public class ForegroundService extends Service {
             Log.e(TAG, ex.toString());
         }
         return null;
+    }
+
+    public void wrtieDataToFile(TimeseriesData data) {
+        String externalDir = Environment.getDataDirectory().getAbsolutePath() + "/data/com.example.foregroundservice";
+        String fileName = "Timeseries-data.txt";
+        File directory = new File(externalDir);
+        if (!directory.exists()) {
+            Log.d(TAG, "Create directory: " + directory);
+           if(!directory.mkdirs()) {
+               Log.e(TAG, "failed to make dirs: " + directory);
+           }
+        }
+        BufferedWriter bufferedWriter = null;
+        try {
+            File file = new File(externalDir + "/" + fileName);
+            Log.d(TAG, "file: " + file);
+            FileWriter fileWriter = new FileWriter(file, true);
+            bufferedWriter = new BufferedWriter(fileWriter);
+            bufferedWriter.append(data.toString());
+            bufferedWriter.newLine();
+            bufferedWriter.close();
+        } catch (Exception e) {
+            Log.e(TAG, "Exception: " + e);
+            try {
+                if (bufferedWriter != null) bufferedWriter.close();
+            } catch (IOException ex) {
+                Log.e(TAG, "Exception: " + ex);
+            }
+        }
+    }
+
+    public void readDataFromFile() {
+        String line = null;
+        String externalDir = Environment.getDataDirectory().getAbsolutePath() + "/data/com.example.foregroundservice";
+        String filename = "Timeseries-data.txt";
+        BufferedReader buf = null;
+        try {
+            Log.d(TAG, "readData from file: " + externalDir + "/" + filename);
+
+            buf = new BufferedReader(new FileReader(externalDir + "/" + filename));
+            while ((line = buf.readLine()) != null) {
+                Log.d(TAG, line);
+            }
+            buf.close();
+        } catch (Exception e) {
+            try {
+                if (buf != null) buf.close();
+            } catch (IOException ex) {
+                Log.e(TAG, "Exception: " + ex);
+            }
+            Log.e(TAG, "Exception: " + e);
+        }
     }
 }
