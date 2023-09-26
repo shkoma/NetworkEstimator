@@ -19,7 +19,6 @@ import android.os.Handler;
 import android.os.HandlerThread;
 import android.os.IBinder;
 import android.os.Message;
-import android.telephony.CellIdentity;
 import android.telephony.CellIdentityLte;
 import android.telephony.CellIdentityNr;
 import android.telephony.CellInfo;
@@ -27,9 +26,6 @@ import android.telephony.CellInfoLte;
 import android.telephony.CellInfoNr;
 import android.telephony.CellSignalStrengthLte;
 import android.telephony.CellSignalStrengthNr;
-import android.telephony.NetworkRegistrationInfo;
-import android.telephony.ServiceState;
-import android.telephony.SignalStrength;
 import android.telephony.SubscriptionManager;
 import android.telephony.TelephonyManager;
 import android.text.format.Formatter;
@@ -46,17 +42,13 @@ import com.google.android.gms.location.FusedLocationProviderClient;
 import com.google.android.gms.location.LocationRequest;
 import com.google.android.gms.location.LocationServices;
 import com.google.android.gms.tasks.CancellationTokenSource;
-import com.google.firebase.crashlytics.buildtools.reloc.com.google.common.collect.Table;
 
 import java.io.BufferedReader;
 import java.io.BufferedWriter;
 import java.io.File;
-import java.io.FileNotFoundException;
 import java.io.FileReader;
 import java.io.FileWriter;
 import java.io.IOException;
-import java.lang.reflect.InvocationTargetException;
-import java.lang.reflect.Method;
 import java.net.InetAddress;
 import java.net.NetworkInterface;
 import java.net.SocketException;
@@ -104,7 +96,6 @@ public class ForegroundService extends Service {
             } else if (ACTION_TERMINATE_SERVICE.equals(intent.getAction())) {
                 stopThread();
                 stopForeground(true);
-//                stopSelf();
             } else if (WifiManager.SCAN_RESULTS_AVAILABLE_ACTION.equals(intent.getAction())) {
             }
         }
@@ -155,37 +146,33 @@ public class ForegroundService extends Service {
         public String bssid;
         public String localIp;
 
-        private String getCurrentTime() {
-            long now = System.currentTimeMillis();
-            Date date = new Date(now);
-            SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss");
-            String nowTime = sdf.format(date);
-            return nowTime;
-        }
-
         @Override
         public String toString() {
-            String str = getCurrentTime() + "," + cid + "," + bandwidth + "," + tac + "," + mcc + "," + mnc + "," +
-                    cqi + "," + rssi + "," + rsrp + "," + rsrq + "," + rssnr  + "," +
-                    longitude + "," + latitude + "," + bssid + "," + localIp;
+            String str = cid + "," + bandwidth + "," + tac + "," + mcc + "," + mnc + "," +
+                    cqi + "," + rssi + "," + rsrp + "," + rsrq + "," + rssnr;
             return str;
         }
+    }
+
+    public static String getCurrentTime() {
+        long now = System.currentTimeMillis();
+        Date date = new Date(now);
+        SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss");
+        String nowTime = sdf.format(date);
+        return nowTime;
     }
 
     List<SignalStrengthListener> mSignalStrengthListener = new ArrayList<>();
     List<CellInfoListener> mCellInfoListener = new ArrayList<>();
 
     private boolean mListen;
-    class SignalStrengthCallback implements SignalStrengthListener.Callback {
-        int mPhoneId;
-        SignalStrengthCallback(int phoneId) {
-            mPhoneId = phoneId;
-        }
-        @Override
-        public void onSignalStrengthChanged(SignalStrength signalStrength) {
-            Log.d(TAG, "received Callback[" + mPhoneId + "]: " + signalStrength.toString());
-        }
-    }
+    private boolean[] mDone;
+    private TimeseriesData[] mData;
+    private List<String> mDataList;
+
+    private int mCount;
+
+    private int MAX_SIZE = 10;
 
     class CellInfoCallback implements CellInfoListener.Callback {
         int mPhoneId;
@@ -195,9 +182,14 @@ public class ForegroundService extends Service {
         @RequiresApi(api = Build.VERSION_CODES.Q)
         @Override
         public void onCellInfoChanged(@NonNull List<CellInfo> cellInfo) {
-            Log.d(TAG, "received Callback[" + mPhoneId + "]: " + cellInfo.toString());
+            if (mDone[mPhoneId] == false) {
+                mDone[mPhoneId] = true;
+            } else {
+                return;
+            }
 
-            TimeseriesData data = new TimeseriesData();
+            Log.d(TAG, "received Callback[" + mPhoneId + "]: " + cellInfo.toString());
+            mData[mPhoneId] = new TimeseriesData();
             for (CellInfo info : cellInfo) {
                 if (info.isRegistered()) {
                     if (info instanceof CellInfoNr) {
@@ -209,26 +201,29 @@ public class ForegroundService extends Service {
                         CellSignalStrengthLte signal = ((CellInfoLte) info).getCellSignalStrength();
                         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
                             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                                data.timestamp = info.getTimestampMillis();
+                                mData[mPhoneId].timestamp = info.getTimestampMillis();
                             }
-                            data.cid = lte.getCi();
-                            data.bandwidth = lte.getBandwidth();
-                            data.tac = lte.getTac();
-                            data.mcc = lte.getMccString();
-                            data.mnc = lte.getMncString();
+                            mData[mPhoneId].cid = lte.getCi();
+                            mData[mPhoneId].bandwidth = lte.getBandwidth();
+                            mData[mPhoneId].tac = lte.getTac();
+                            mData[mPhoneId].mcc = lte.getMccString();
+                            mData[mPhoneId].mnc = lte.getMncString();
                             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                                data.cqi = signal.getCqi();
-                                data.rssi = signal.getRssi();
-                                data.rsrp = signal.getRsrp();
-                                data.rsrq = signal.getRsrq();
-                                data.rssnr = signal.getRssnr();
+                                mData[mPhoneId].cqi = signal.getCqi();
+                                mData[mPhoneId].rssi = signal.getRssi();
+                                mData[mPhoneId].rsrp = signal.getRsrp();
+                                mData[mPhoneId].rsrq = signal.getRsrq();
+                                mData[mPhoneId].rssnr = signal.getRssnr();
                             }
                         }
                     }
                 }
             }
-            getCurrentLocation(data);
-            getCurrentWifiInfo(data);
+
+            if (mPhoneId == 0) {
+                getCurrentWifiInfo(mData[mPhoneId]);
+                getCurrentLocation(mData[mPhoneId]);
+            }
         }
     }
 
@@ -242,19 +237,21 @@ public class ForegroundService extends Service {
         mWifiManager = (WifiManager) getSystemService(Context.WIFI_SERVICE);
         mHandlerThread = new HandlerThread("ForegroundService Handler");
         mHandlerThread.start();
-        for (int idx = 0; idx < mTelephonyManager.getActiveModemCount(); idx++) {
-            mCellInfoListener.add(new CellInfoListener(this, idx, new CellInfoCallback(idx)));
-//            mSignalStrengthListener.add(new SignalStrengthListener(this, idx, new SignalStrengthCallback(idx)));
-        }
 
         mListen = true;
+        mDone = new boolean[mTelephonyManager.getActiveModemCount()];
+        mData = new TimeseriesData[mTelephonyManager.getActiveModemCount()];
+        mDataList = new ArrayList<>();
+        mCount = 0;
+
+        for (int idx = 0; idx < mTelephonyManager.getActiveModemCount(); idx++) {
+            mCellInfoListener.add(new CellInfoListener(this, idx, new CellInfoCallback(idx)));
+            mDone[idx] = false;
+        }
 
         for (CellInfoListener listener : mCellInfoListener) {
             listener.updateSubscriptionIds();
         }
-//        for (SignalStrengthListener listener : mSignalStrengthListener) {
-//            listener.updateSubscriptionIds();
-//        }
 
         mHandler = new Handler(mHandlerThread.getLooper()) {
             @RequiresApi(api = Build.VERSION_CODES.S)
@@ -269,18 +266,13 @@ public class ForegroundService extends Service {
                         if (mListen) {
                             for (CellInfoListener listener : mCellInfoListener) {
                                 listener.pause();
+                                //mDone[listener.getPhoneId()] = false;
                             }
-//                            for (SignalStrengthListener listener : mSignalStrengthListener) {
-//                                listener.pause();
-//                            }
                             mListen = false;
                         } else {
                             for (CellInfoListener listener : mCellInfoListener) {
                                 listener.resume();
                             }
-//                            for (SignalStrengthListener listener : mSignalStrengthListener) {
-//                                listener.resume();
-//                            }
                             mListen = true;
                         }
 
@@ -415,37 +407,6 @@ public class ForegroundService extends Service {
         }
     }
 
-    private void reflectMethod() {
-        try {
-            TelephonyManager telephony = (TelephonyManager) getSystemService(Context.TELEPHONY_SERVICE);
-            Class<?> tmClass = Class.forName(telephony.getClass().getName());
-
-            Class<?>[] parameter = new Class[1];
-            parameter[0] = int.class;
-            Method getAllCellInfoBySubId = tmClass.getMethod("getAllCellInfoBySubId", parameter);
-
-            Object[] obParameter = new Object[1];
-            obParameter[0] = 0;
-            Object ob_phone = getAllCellInfoBySubId.invoke(telephony, obParameter);
-
-            if (ob_phone != null) {
-                Log.d(TAG, ob_phone.toString());
-            }
-//            Method[] declaredMethod = tmClass.getDeclaredMethods();
-//            for (Method m : declaredMethod) {
-//                Log.d(TAG, m.getName());
-//            }
-        } catch (ClassNotFoundException e) {
-            Log.e(TAG, "No TelephoneManager");
-        } catch (NoSuchMethodException e) {
-            Log.e(TAG, "NoSuchMethodException, " + e);
-        } catch (InvocationTargetException e) {
-            Log.e(TAG, "InvocationTargetException, " + e);
-        } catch (IllegalAccessException e) {
-            Log.e(TAG, "IllegalAccessException, " + e);
-        }
-    }
-
     class LocationExecutor implements Executor {
         private Executor executor;
 
@@ -460,6 +421,32 @@ public class ForegroundService extends Service {
         @Override
         public void execute(Runnable runnable) {
             executor.execute(runnable);
+        }
+    }
+
+    private void arrangeData() {
+        for (boolean check : mDone) {
+            if (!check) {
+                Log.e(TAG, "not received a data yet");
+                return;
+            }
+        }
+
+        String str = getCurrentTime() + ",";
+        str += mData[0].longitude + "," + mData[0].latitude + "," + mData[0].bssid + " ";
+        str += mData[0].toString();
+        mDone[0] = false;
+
+        if (mData.length > 1) {
+            str += " " + mData[1].toString();
+            mDone[1] = false;
+        }
+        mDataList.add(str);
+
+        if (mCount++ > MAX_SIZE) {
+            mCount = 0;
+            wrtieDataToFile();
+            mDataList.clear();
         }
     }
 
@@ -479,7 +466,8 @@ public class ForegroundService extends Service {
                             data.longitude = location.getLongitude();
                             data.latitude = location.getLatitude();
                             Log.d(TAG, data.toString());
-                            wrtieDataToFile(data);
+                            arrangeData();
+                            //wrtieDataToFile(data);
                         }
                     });
         }
@@ -517,7 +505,7 @@ public class ForegroundService extends Service {
         return null;
     }
 
-    public void wrtieDataToFile(TimeseriesData data) {
+    public void wrtieDataToFile() {
         String externalDir = Environment.getDataDirectory().getAbsolutePath() + "/data/com.example.foregroundservice";
         String fileName = "Timeseries-data.txt";
         File directory = new File(externalDir);
@@ -533,8 +521,10 @@ public class ForegroundService extends Service {
             Log.d(TAG, "file: " + file);
             FileWriter fileWriter = new FileWriter(file, true);
             bufferedWriter = new BufferedWriter(fileWriter);
-            bufferedWriter.append(data.toString());
-            bufferedWriter.newLine();
+            for (String data: mDataList) {
+                bufferedWriter.append(data);
+                bufferedWriter.newLine();
+            }
             bufferedWriter.close();
         } catch (Exception e) {
             Log.e(TAG, "Exception: " + e);

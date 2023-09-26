@@ -59,6 +59,10 @@ public class CellInfoListener {
         mTelephonyCallbacks = new TreeMap<>();
     }
 
+    public int getPhoneId() {
+        return mPhoneId;
+    }
+
     @RequiresApi(api = Build.VERSION_CODES.S)
     public void resume() {
         for (int subId : mTelephonyCallbacks.keySet()) {
